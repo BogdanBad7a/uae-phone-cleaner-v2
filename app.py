@@ -1,92 +1,69 @@
+
 import streamlit as st
 import pandas as pd
 import re
-from io import BytesIO
 
-st.set_page_config(page_title="UAE Phone Cleaner V2.1", layout="centered")
-st.title("📞 UAE Phone Number Cleaner - V2.1")
+def clean_phone_numbers(text):
+    if pd.isna(text):
+        return []
 
-# Regex patterns
-MOBILE_PATTERN = re.compile(r'(?:\+?971|00971|971)?[\s\-\|\/]?(5[0-9]{1})[\s\-\|\/]?([0-9]{6,7})')
-LANDLINE_PATTERN = re.compile(r'(?:\+?971|00971|971)?[\s\-\|\/]?(\d{1,2})[\s\-\|\/]?(\d{6,7})')
+    text = str(text)
+    text = text.replace('o', '0').replace('O', '0')  # fix letter o
+    text = text.replace('|', ' ').replace('-', ' ').replace('/', ' ')
+    text = re.sub(r'[^\d+,\s\(\)\^&]', ' ', text)
+    parts = re.split(r'[,\s;/|()\^&]+', text)
 
-def extract_numbers(text):
-    text = str(text)  # Convert everything to string
-
-    text = text.replace('o', '0').replace('O', '0')
-    text = re.sub(r'[a-zA-Z]', '', text)
-    text = re.sub(r'[\(\)\[\]{}]', ' ', text)
-    text = re.sub(r'ext\d+', '', text)
-    text = re.sub(r'\+1-\(\d+\)[\d\-]+', '', text)
-    text = re.sub(r'[\^]', ' ', text)
-
-    parts = re.split(r'[\s,;|/]+', text)
-
-    # Handle suffix chaining like 23636711/16/17
-    expanded = []
-    for p in parts:
-        if re.search(r'/\d+/?\d*', p):
-            base = re.findall(r'(\d+)', p)
-            if len(base) >= 2:
-                root = base[0][:-2]
-                suffixes = base[1:]
-                for s in suffixes:
-                    if len(s) == 2:
-                        expanded.append(root + s)
-            else:
-                expanded.append(p)
-        else:
-            expanded.append(p)
-    parts = expanded
-
-    results = []
-
+    results = set()
     for part in parts:
-        part = part.strip()
-        if not part:
-            continue
+        digits = re.sub(r'\D', '', part)
 
-        m = re.match(MOBILE_PATTERN, part)
-        if m:
-            full = '+971' + m.group(1) + m.group(2)
-            if len(full) == 13:
-                results.append(full)
-            continue
+        # Mobile with country code
+        if digits.startswith('00971') and len(digits) == 14 and digits[5] == '5':
+            results.add('+971' + digits[5:])
+        elif digits.startswith('971') and len(digits) == 12 and digits[3] == '5':
+            results.add('+971' + digits[3:])
+        elif digits.startswith('05') and len(digits) == 10:
+            results.add('+971' + digits[1:])
+        elif digits.startswith('5') and len(digits) == 9:
+            results.add('+971' + digits)
 
-        l = re.match(LANDLINE_PATTERN, part)
-        if l:
-            area = l.group(1)
-            line = l.group(2)
-            if area.startswith('0'):
-                area = area[1:]
-            results.append(f"0{area}-{line}")
+        # Landline
+        elif digits.startswith('00971') and digits[5] in '23467' and len(digits) == 12:
+            results.add('+971' + digits[5:])
+        elif digits.startswith('971') and digits[3] in '23467' and len(digits) == 11:
+            results.add('+971' + digits[3:])
+        elif digits.startswith('0') and digits[1] in '23467' and len(digits) == 9:
+            results.add('+971' + digits[1:])
+        elif digits.startswith('2') or digits.startswith('3') or digits.startswith('4'):
+            if len(digits) == 7:
+                results.add('+971' + digits)
 
-    return results
+    return list(results)
 
-def clean_excel(file):
-    xl = pd.read_excel(file, sheet_name=None)
-    final_numbers = set()
+def process_file(uploaded_file):
+    xls = pd.ExcelFile(uploaded_file)
+    all_numbers = set()
 
-    for sheet, df in xl.items():
-        for col in df.columns:
-            for val in df[col]:
-                final_numbers.update(extract_numbers(val))
+    for sheet_name in xls.sheet_names:
+        df = xls.parse(sheet_name)
+        for column in df.columns:
+            for cell in df[column]:
+                numbers = clean_phone_numbers(cell)
+                all_numbers.update(numbers)
 
-    return sorted(final_numbers)
+    output_df = pd.DataFrame(sorted(all_numbers), columns=["Cleaned UAE Numbers"])
+    return output_df
 
-def generate_download(df):
-    output = BytesIO()
-    df.to_excel(output, index=False, engine='openpyxl')
-    output.seek(0)
-    return output
+st.title("🇦🇪 UAE Phone Cleaner V2.2")
 
-uploaded = st.file_uploader("Upload your messy Excel file (.xlsx):", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload messy Excel file", type=["xlsx"])
 
-if uploaded:
-    with st.spinner("Cleaning numbers... Hang tight!"):
-        numbers = clean_excel(uploaded)
-        df_cleaned = pd.DataFrame({"Cleaned Numbers": numbers})
-        buffer = generate_download(df_cleaned)
+if uploaded_file:
+    cleaned_df = process_file(uploaded_file)
+    st.success(f"✅ Found {len(cleaned_df)} unique phone numbers.")
+    st.dataframe(cleaned_df)
 
-    st.success(f"✅ Extracted {len(numbers)} unique numbers!")
-    st.download_button("📥 Download Cleaned Excel", buffer, file_name="cleaned_numbers_v2.1.xlsx")
+    cleaned_file = "uae_cleaned_output.xlsx"
+    cleaned_df.to_excel(cleaned_file, index=False)
+    with open(cleaned_file, "rb") as f:
+        st.download_button("📥 Download Cleaned File", f, file_name=cleaned_file)
