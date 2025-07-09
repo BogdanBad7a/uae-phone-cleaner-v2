@@ -3,16 +3,15 @@ import pandas as pd
 import re
 from io import BytesIO
 
-st.set_page_config(page_title="UAE Phone Cleaner V2", layout="centered")
-st.title("📞 UAE Phone Number Cleaner - V2")
+st.set_page_config(page_title="UAE Phone Cleaner V2.1", layout="centered")
+st.title("📞 UAE Phone Number Cleaner - V2.1")
 
 # Regex patterns
 MOBILE_PATTERN = re.compile(r'(?:\+?971|00971|971)?[\s\-\|\/]?(5[0-9]{1})[\s\-\|\/]?([0-9]{6,7})')
 LANDLINE_PATTERN = re.compile(r'(?:\+?971|00971|971)?[\s\-\|\/]?(\d{1,2})[\s\-\|\/]?(\d{6,7})')
 
 def extract_numbers(text):
-    if not isinstance(text, str):
-        return []
+    text = str(text)  # Convert everything to string
 
     text = text.replace('o', '0').replace('O', '0')
     text = re.sub(r'[a-zA-Z]', '', text)
@@ -22,6 +21,24 @@ def extract_numbers(text):
     text = re.sub(r'[\^]', ' ', text)
 
     parts = re.split(r'[\s,;|/]+', text)
+
+    # Handle suffix chaining like 23636711/16/17
+    expanded = []
+    for p in parts:
+        if re.search(r'/\d+/?\d*', p):
+            base = re.findall(r'(\d+)', p)
+            if len(base) >= 2:
+                root = base[0][:-2]
+                suffixes = base[1:]
+                for s in suffixes:
+                    if len(s) == 2:
+                        expanded.append(root + s)
+            else:
+                expanded.append(p)
+        else:
+            expanded.append(p)
+    parts = expanded
+
     results = []
 
     for part in parts:
@@ -72,4 +89,4 @@ if uploaded:
         buffer = generate_download(df_cleaned)
 
     st.success(f"✅ Extracted {len(numbers)} unique numbers!")
-    st.download_button("📥 Download Cleaned Excel", buffer, file_name="cleaned_numbers_v2.xlsx")
+    st.download_button("📥 Download Cleaned Excel", buffer, file_name="cleaned_numbers_v2.1.xlsx")
