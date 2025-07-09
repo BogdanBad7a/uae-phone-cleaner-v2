@@ -1,69 +1,128 @@
-
 import streamlit as st
 import pandas as pd
 import re
+import io
 
-def clean_phone_numbers(text):
-    if pd.isna(text):
-        return []
+# Streamlit app: UAE Phone Cleaner v2.2 (handles 27 manual cases)
 
-    text = str(text)
-    text = text.replace('o', '0').replace('O', '0')  # fix letter o
-    text = text.replace('|', ' ').replace('-', ' ').replace('/', ' ')
-    text = re.sub(r'[^\d+,\s\(\)\^&]', ' ', text)
-    parts = re.split(r'[,\s;/|()\^&]+', text)
+st.set_page_config(page_title="UAE Phone Cleaner v2.2", layout="centered")
+st.title("📞 UAE Phone Number Cleaner v2.2")
 
-    results = set()
-    for part in parts:
-        digits = re.sub(r'\D', '', part)
+# Delimiters and patterns
+DELIMITER_SPLIT = r'[|/\\,;+&\^\(\)\s]+'
+AND_PATTERN = re.compile(r'\bAND\b', flags=re.IGNORECASE)
+EXT_FAX_PATTERN = re.compile(r'(?:ext|fax)\d+', flags=re.IGNORECASE)
 
-        # Mobile with country code
-        if digits.startswith('00971') and len(digits) == 14 and digits[5] == '5':
-            results.add('+971' + digits[5:])
-        elif digits.startswith('971') and len(digits) == 12 and digits[3] == '5':
-            results.add('+971' + digits[3:])
-        elif digits.startswith('05') and len(digits) == 10:
-            results.add('+971' + digits[1:])
-        elif digits.startswith('5') and len(digits) == 9:
-            results.add('+971' + digits)
+# Extract numbers from a single text cell
+def extract_from_text(text: str) -> set[str]:
+    phones = set()
+    # 1. Normalize AND and custom separators
+    text = AND_PATTERN.sub(' ', text)
+    text = text.replace('^^', ' ')
 
-        # Landline
-        elif digits.startswith('00971') and digits[5] in '23467' and len(digits) == 12:
-            results.add('+971' + digits[5:])
-        elif digits.startswith('971') and digits[3] in '23467' and len(digits) == 11:
-            results.add('+971' + digits[3:])
-        elif digits.startswith('0') and digits[1] in '23467' and len(digits) == 9:
-            results.add('+971' + digits[1:])
-        elif digits.startswith('2') or digits.startswith('3') or digits.startswith('4'):
-            if len(digits) == 7:
-                results.add('+971' + digits)
+    # 2. Split on delimiters
+    tokens = re.split(DELIMITER_SPLIT, text)
+    cleaned = []
+    for tok in tokens:
+        tok = tok.strip().lower().replace('o', '0').replace('a', '0')
+        # strip leading punctuation
+        tok = re.sub(r'^[",]+', '', tok)
+        # remove extensions and fax labels
+        tok = EXT_FAX_PATTERN.sub('', tok)
+        # skip scientific notation
+        if re.search(r'[eE]\+', tok):
+            continue
+        # extract digits only
+        digits = re.sub(r'\D', '', tok)
+        if not digits:
+            continue
+        cleaned.append(digits)
 
-    return list(results)
+    # 3. Direct classification
+    for digits in cleaned:
+        # strip leading zeros if double/triple
+        if digits.startswith('00'):
+            # Case 9: replace leading 00+ with nothing
+            digits = digits.lstrip('0')
+        # Case 6: remove stray 0 after country code
+        if digits.startswith('9710'):
+            digits = digits[:3] + digits[4:]
+        # classify mobile/int'l mobile
+        if re.fullmatch(r'9715\d{8}', digits):
+            phones.add('+' + digits)
+            continue
+        if re.fullmatch(r'5\d{8}', digits):
+            phones.add('+971' + digits)
+            continue
+        if re.fullmatch(r'05\d{8}', digits):
+            phones.add('+971' + digits[1:])
+            continue
+        # classify landline (area codes 2,3,4,6)
+        if re.fullmatch(r'971[2346]\d{7}', digits):
+            phones.add('+' + digits)
+            continue
+        if re.fullmatch(r'[2346]\d{7}', digits):
+            phones.add('+971' + digits)
+            continue
+        if re.fullmatch(r'0[2346]\d{7}', digits):
+            phones.add('+971' + digits[1:])
+            continue
 
-def process_file(uploaded_file):
-    xls = pd.ExcelFile(uploaded_file)
+    # 4. Handle reversed prefix-body combinations (Cases 2,3,5)
+    # identify potential prefixes and bodies
+    prefix_mobile = [d for d in cleaned if re.fullmatch(r'0?5\d', d)]
+    prefix_land   = [d for d in cleaned if re.fullmatch(r'0?[2346]', d)]
+    body_tokens   = [d for d in cleaned if re.fullmatch(r'\d{7}', d)]
+
+    for prefix in prefix_mobile:
+        # normalize mobile prefix to two digits
+        if len(prefix) == 3 and prefix.startswith('0'):
+            mp = prefix[1:]
+        else:
+            mp = prefix
+        for body in body_tokens:
+            comb = mp + body
+            if re.fullmatch(r'5\d{8}', comb):
+                phones.add('+971' + comb)
+
+    for prefix in prefix_land:
+        # normalize landline area code to one digit
+        if len(prefix) == 2 and prefix.startswith('0'):
+            ap = prefix[1]
+        else:
+            ap = prefix[-1]
+        for body in body_tokens:
+            comb = ap + body
+            if re.fullmatch(r'[2346]\d{7}', comb):
+                phones.add('+971' + comb)
+
+    return phones
+
+# Extract from entire DataFrame
+def extract_phones(df: pd.DataFrame) -> set[str]:
+    result = set()
+    for col in df.columns:
+        for val in df[col].dropna():
+            text = str(val)
+            result |= extract_from_text(text)
+    return result
+
+# Streamlit UI
+uploaded = st.file_uploader("Upload Excel File (.xlsx)", type=['xlsx'])
+if uploaded:
+    df_all = pd.read_excel(uploaded, sheet_name=None)
     all_numbers = set()
+    for sheet, df in df_all.items():
+        all_numbers |= extract_phones(df)
 
-    for sheet_name in xls.sheet_names:
-        df = xls.parse(sheet_name)
-        for column in df.columns:
-            for cell in df[column]:
-                numbers = clean_phone_numbers(cell)
-                all_numbers.update(numbers)
+    unique_numbers = sorted(all_numbers)
+    final_df = pd.DataFrame({"Cleaned Phone Number": unique_numbers})
 
-    output_df = pd.DataFrame(sorted(all_numbers), columns=["Cleaned UAE Numbers"])
-    return output_df
+    st.success(f"✅ Found {len(final_df)} valid UAE numbers.")
+    st.dataframe(final_df)
 
-st.title("🇦🇪 UAE Phone Cleaner V2.2")
-
-uploaded_file = st.file_uploader("Upload messy Excel file", type=["xlsx"])
-
-if uploaded_file:
-    cleaned_df = process_file(uploaded_file)
-    st.success(f"✅ Found {len(cleaned_df)} unique phone numbers.")
-    st.dataframe(cleaned_df)
-
-    cleaned_file = "uae_cleaned_output.xlsx"
-    cleaned_df.to_excel(cleaned_file, index=False)
-    with open(cleaned_file, "rb") as f:
-        st.download_button("📥 Download Cleaned File", f, file_name=cleaned_file)
+    # Downloadable Excel
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        final_df.to_excel(writer, index=False)
+    st.download_button("📥 Download Cleaned Excel", output.getvalue(), file_name="cleaned_uae_numbers_v2.xlsx")
